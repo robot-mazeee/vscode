@@ -1,0 +1,27 @@
+{
+  "name": "outline-refactor",
+  "displayName": "Outline Refactor",
+  "description": "Drag-and-drop structural refactoring for symbols in the Outline view.",
+  "version": "0.0.1",
+  "publisher": "outline-refactor",
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension",
+  "contributes": {
+    "commands": [
+      {
+        "command": "outline.moveSymbol",
+        "title": "Outline Refactor: Move Symbol"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "node ../../node_modules/typescript/bin/tsc -p ./",
+    "watch": "node ../../node_modules/typescript/bin/tsc -watch -p ./"
+  },
+  "devDependencies": {}
+}

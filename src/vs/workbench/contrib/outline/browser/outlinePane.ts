@@ -300,6 +300,30 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		return elements.length === 1 ? elements[0] : undefined;
 	}
 
+	private _toOutlineMoveSymbol(symbol: DocumentSymbol): {
+		name: string;
+		kind: number;
+		range: {
+			start: { line: number; character: number };
+			end: { line: number; character: number };
+		};
+	} {
+		return {
+			name: symbol.name,
+			kind: symbol.kind,
+			range: {
+				start: {
+					line: symbol.range.startLineNumber - 1,
+					character: symbol.range.startColumn - 1
+				},
+				end: {
+					line: symbol.range.endLineNumber - 1,
+					character: symbol.range.endColumn - 1
+				}
+			}
+		};
+	}
+
 	// creates the outline drag-and-drop implementation
 	private _createOutlineDragAndDrop(
 		outline: IOutline<unknown>,
@@ -369,8 +393,8 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 
 				void this._commandService.executeCommand('outline.moveSymbol', {
 					uri: outline.uri,
-					source: sourceSymbol,
-					target: targetSymbol,
+					source: this._toOutlineMoveSymbol(sourceSymbol),
+					target: this._toOutlineMoveSymbol(targetSymbol),
 					position
 				});
 			},
