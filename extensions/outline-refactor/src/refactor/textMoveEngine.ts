@@ -4,26 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import * as ts from 'typescript';
 import { MoveSymbolRequest, MoveValidationResult, SymbolMoveEngine } from './types';
 
 export class TextMoveEngine implements SymbolMoveEngine {
 	public canMove(request: MoveSymbolRequest): MoveValidationResult {
-
-		// For our initial implementation, we only support moving JavaScript methods outside of their classes
-		if (request.document.languageId !== 'javascript') {
-			return { allowed: false };
-		}
-
-		// Only allow moving methods outside of their classes
-		if (request.source.kind !== vscode.SymbolKind.Method || request.target.kind === vscode.SymbolKind.Class) {
-			return { allowed: false };
-		}
-
 		const sourceRange = this.expandToWholeLines(
 			request.document,
 			request.source.range
 		);
+
 		const targetRange = this.expandToWholeLines(
 			request.document,
 			request.target.range
@@ -31,140 +20,13 @@ export class TextMoveEngine implements SymbolMoveEngine {
 
 		// Prevent moving a symbol into itself
 		if (sourceRange.contains(targetRange.start) || sourceRange.contains(targetRange.end)) {
-			return { allowed: false };
-		}
-
-		const sourceFile = ts.createSourceFile(
-			request.document.fileName,
-			request.document.getText(),
-			ts.ScriptTarget.Latest,
-			true,
-			ts.ScriptKind.JS
-		);
-
-		// Find the class element being moved and check if it's a method that can be moved outside of its class
-		const member = this.findMovedClassElement(sourceFile, request.document, request.source.range);
-		if (!member) {
-			return { allowed: false };
-		}
-
-		// Constructors cannot be moved out of their classes
-		if (ts.isConstructorDeclaration(member)) {
-			return { allowed: false, reason: 'Constructors cannot be moved out of a class.' };
-		}
-
-		// Getters and setters cannot be moved out of their classes
-		if (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) {
-			return { allowed: false, reason: 'Getters and setters cannot be moved out of a class.' };
-		}
-
-		// Ensure the moved member is a method, as we currently only support moving methods outside of their classes
-		// From here on we can safely cast it and perform method-specific checks
-		if (!ts.isMethodDeclaration(member)) {
-			return { allowed: false };
-		}
-
-		// Methods with computed names cannot be moved outside of their classes
-		if (ts.isComputedPropertyName(member.name)) {
-			return { allowed: false, reason: 'Methods with computed names cannot be moved yet.' };
-		}
-
-		// Static methods cannot be moved outside of their classes
-		if (this.hasModifier(member, ts.SyntaxKind.StaticKeyword)) {
-			return { allowed: false, reason: 'Static methods cannot be moved out of a class yet.' };
-		}
-
-		// Methods that use private class fields or methods cannot be moved outside of their classes
-		if (this.containsPrivateIdentifier(member)) {
-			return { allowed: false, reason: 'Methods that use private class fields or methods cannot be moved yet.' };
-		}
-
-		// Methods that use super cannot be moved outside of their classes
-		if (this.containsSuperKeyword(member)) {
-			return { allowed: false, reason: 'Methods that use super cannot be moved out of a class.' };
+			return {
+				allowed: false,
+				reason: 'Cannot move a symbol into itself.'
+			};
 		}
 
 		return { allowed: true };
-	}
-
-	// Finds the class element that corresponds to the symbol being moved
-	private findMovedClassElement(
-		sourceFile: ts.SourceFile,
-		document: vscode.TextDocument,
-		sourceRange: vscode.Range
-	): ts.ClassElement | undefined {
-
-		const sourceStart = document.offsetAt(sourceRange.start);
-		const sourceEnd = document.offsetAt(sourceRange.end);
-
-		let bestMatch: ts.ClassElement | undefined;
-		let bestMatchLength = Number.MAX_SAFE_INTEGER;
-
-		const visit = (node: ts.Node): void => {
-			if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
-				for (const member of node.members) {
-					const memberStart = member.getFullStart();
-					const memberEnd = member.getEnd();
-
-					if (memberStart <= sourceStart && sourceEnd <= memberEnd) {
-						const memberLength = memberEnd - memberStart;
-						if (memberLength < bestMatchLength) {
-							bestMatch = member;
-							bestMatchLength = memberLength;
-						}
-					}
-				}
-			}
-
-			ts.forEachChild(node, visit);
-		};
-
-		visit(sourceFile);
-		return bestMatch;
-	}
-
-	private hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
-		return ts.canHaveModifiers(node) && ts.getModifiers(node)?.some(modifier => modifier.kind === kind) === true;
-	}
-
-	private containsPrivateIdentifier(node: ts.Node): boolean {
-		let found = false;
-
-		const visit = (child: ts.Node): void => {
-			if (found) {
-				return;
-			}
-
-			if (ts.isPrivateIdentifier(child)) {
-				found = true;
-				return;
-			}
-
-			ts.forEachChild(child, visit);
-		};
-
-		visit(node);
-		return found;
-	}
-
-	private containsSuperKeyword(node: ts.Node): boolean {
-		let found = false;
-
-		const visit = (child: ts.Node): void => {
-			if (found) {
-				return;
-			}
-
-			if (child.kind === ts.SyntaxKind.SuperKeyword) {
-				found = true;
-				return;
-			}
-
-			ts.forEachChild(child, visit);
-		};
-
-		visit(node);
-		return found;
 	}
 
 	public buildEdit(request: MoveSymbolRequest): vscode.WorkspaceEdit | undefined {
@@ -220,7 +82,7 @@ export class TextMoveEngine implements SymbolMoveEngine {
 		return edit;
 	}
 
-	private expandToWholeLines(
+	protected expandToWholeLines(
 		document: vscode.TextDocument,
 		range: vscode.Range
 	): vscode.Range {
@@ -244,7 +106,6 @@ export class TextMoveEngine implements SymbolMoveEngine {
 		);
 	}
 
-	// used for outdenting the moved method so that it fits better in the new location
 	private outdentMovedText(text: string): string {
 		const eol = text.includes('\r\n') ? '\r\n' : '\n';
 		const hasFinalEol = text.endsWith('\n');
@@ -268,6 +129,3 @@ export class TextMoveEngine implements SymbolMoveEngine {
 		return outdented.join(eol) + (hasFinalEol ? eol : '');
 	}
 }
-
-
-

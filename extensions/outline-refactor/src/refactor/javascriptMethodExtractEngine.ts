@@ -1,0 +1,313 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+import * as vscode from 'vscode';
+import * as ts from 'typescript';
+import { MoveSymbolRequest, MoveValidationResult } from './types';
+import { TextMoveEngine } from './textMoveEngine';
+
+export class JavaScriptMethodExtractEngine extends TextMoveEngine {
+	public override canMove(request: MoveSymbolRequest): MoveValidationResult {
+		if (request.document.languageId !== 'javascript') {
+			return {
+				allowed: false,
+				reason: 'Only JavaScript files are supported for this refactoring right now.'
+			};
+		}
+
+		if (request.source.kind !== vscode.SymbolKind.Method) {
+			return {
+				allowed: false,
+				reason: 'Only methods can be moved out of classes right now.'
+			};
+		}
+
+		if (request.sourceParent?.kind !== vscode.SymbolKind.Class) {
+			return {
+				allowed: false,
+				reason: 'The selected method must be inside a class.'
+			};
+		}
+
+		const targetIsSourceParent =
+			request.sourceParent !== undefined &&
+			this.sameSymbol(request.target, request.sourceParent);
+
+		if (request.targetParent?.kind === vscode.SymbolKind.Class) {
+			return {
+				allowed: false,
+				reason: 'Moving methods into a class is not supported yet. Drop the method outside of its enclosing class.'
+			};
+		}
+
+		if (request.target.kind === vscode.SymbolKind.Class && !targetIsSourceParent) {
+			return {
+				allowed: false,
+				reason: 'Moving methods into another class is not supported yet.'
+			};
+		}
+
+		const basicMoveValidation = super.canMove(request);
+		if (!basicMoveValidation.allowed) {
+			return basicMoveValidation;
+		}
+
+		const sourceFile = ts.createSourceFile(
+			request.document.fileName,
+			request.document.getText(),
+			ts.ScriptTarget.Latest,
+			true,
+			ts.ScriptKind.JS
+		);
+
+		const analysis = this.findMovedMethod(
+			sourceFile,
+			request.document,
+			request.source.range
+		);
+
+		if (!analysis) {
+			return {
+				allowed: false,
+				reason: 'Could not resolve the selected method in the syntax tree.'
+			};
+		}
+
+		const { method, enclosingClass } = analysis;
+
+		if (ts.isConstructorDeclaration(method)) {
+			return {
+				allowed: false,
+				reason: 'Constructors cannot be moved out of a class.'
+			};
+		}
+
+		if (!ts.isMethodDeclaration(method)) {
+			return {
+				allowed: false,
+				reason: 'Only class methods can be moved out right now.'
+			};
+		}
+
+		if (!method.body) {
+			return {
+				allowed: false,
+				reason: 'Methods without bodies cannot be moved.'
+			};
+		}
+
+		if (!ts.isIdentifier(method.name)) {
+			return {
+				allowed: false,
+				reason: 'Only methods with simple identifier names can be moved.'
+			};
+		}
+
+		if (this.hasModifier(method, ts.SyntaxKind.StaticKeyword)) {
+			return {
+				allowed: false,
+				reason: 'Static methods cannot be moved out of a class yet.'
+			};
+		}
+
+		if (this.containsPrivateIdentifier(method)) {
+			return {
+				allowed: false,
+				reason: 'Methods that use private fields or private methods cannot be moved yet.'
+			};
+		}
+
+		if (this.containsSuperKeyword(method)) {
+			return {
+				allowed: false,
+				reason: 'Methods that use super cannot be moved out of a class.'
+			};
+		}
+
+		if (this.containsDynamicThisAccess(method)) {
+			return {
+				allowed: false,
+				reason: 'Methods with dynamic this[...] access cannot be moved safely.'
+			};
+		}
+
+		const methodName = method.name.text;
+		const callSiteValidation = this.validateCallSites(
+			sourceFile,
+			enclosingClass,
+			method,
+			methodName
+		);
+
+		if (!callSiteValidation.allowed) {
+			return callSiteValidation;
+		}
+
+		return { allowed: true };
+	}
+
+	private sameSymbol(a: { name: string; kind: number; range: vscode.Range }, b: { name: string; kind: number; range: vscode.Range }): boolean {
+		return a.name === b.name &&
+			a.kind === b.kind &&
+			a.range.start.line === b.range.start.line &&
+			a.range.start.character === b.range.start.character &&
+			a.range.end.line === b.range.end.line &&
+			a.range.end.character === b.range.end.character;
+	}
+
+	private findMovedMethod(
+		sourceFile: ts.SourceFile,
+		document: vscode.TextDocument,
+		sourceRange: vscode.Range
+	): { method: ts.ClassElement; enclosingClass: ts.ClassLikeDeclaration } | undefined {
+		const sourceStart = document.offsetAt(sourceRange.start);
+		const sourceEnd = document.offsetAt(sourceRange.end);
+
+		let bestMatch: { method: ts.ClassElement; enclosingClass: ts.ClassLikeDeclaration } | undefined;
+		let bestMatchLength = Number.MAX_SAFE_INTEGER;
+
+		const visit = (node: ts.Node): void => {
+			if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+				for (const member of node.members) {
+					const memberStart = member.getFullStart();
+					const memberEnd = member.getEnd();
+
+					if (memberStart <= sourceStart && sourceEnd <= memberEnd) {
+						const memberLength = memberEnd - memberStart;
+						if (memberLength < bestMatchLength) {
+							bestMatch = {
+								method: member,
+								enclosingClass: node
+							};
+							bestMatchLength = memberLength;
+						}
+					}
+				}
+			}
+
+			ts.forEachChild(node, visit);
+		};
+
+		visit(sourceFile);
+		return bestMatch;
+	}
+
+	private validateCallSites(
+		sourceFile: ts.SourceFile,
+		enclosingClass: ts.ClassLikeDeclaration,
+		movedMethod: ts.MethodDeclaration,
+		methodName: string
+	): MoveValidationResult {
+		let invalidReason: string | undefined;
+
+		const visit = (node: ts.Node): void => {
+			if (invalidReason) {
+				return;
+			}
+
+			// Ignore the moved method body itself.
+			if (node === movedMethod) {
+				return;
+			}
+
+			if (ts.isPropertyAccessExpression(node) && node.name.text === methodName) {
+				const isThisAccess = node.expression.kind === ts.SyntaxKind.ThisKeyword;
+				const isDirectCall = ts.isCallExpression(node.parent) && node.parent.expression === node;
+				const isInsideSourceClass = this.isNodeInside(node, enclosingClass);
+
+				if (!isThisAccess || !isDirectCall || !isInsideSourceClass) {
+					invalidReason = `Cannot safely rewrite all call sites for '${methodName}'.`;
+					return;
+				}
+			}
+
+			if (ts.isElementAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword) {
+				invalidReason = 'Dynamic this[...] access prevents safe call-site analysis.';
+				return;
+			}
+
+			ts.forEachChild(node, visit);
+		};
+
+		visit(sourceFile);
+
+		if (invalidReason) {
+			return {
+				allowed: false,
+				reason: invalidReason
+			};
+		}
+
+		return { allowed: true };
+	}
+
+	private isNodeInside(node: ts.Node, parent: ts.Node): boolean {
+		return parent.getFullStart() <= node.getFullStart() && node.getEnd() <= parent.getEnd();
+	}
+
+	private hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+		return ts.canHaveModifiers(node) && ts.getModifiers(node)?.some(modifier => modifier.kind === kind) === true;
+	}
+
+	private containsPrivateIdentifier(node: ts.Node): boolean {
+		let found = false;
+
+		const visit = (child: ts.Node): void => {
+			if (found) {
+				return;
+			}
+
+			if (ts.isPrivateIdentifier(child)) {
+				found = true;
+				return;
+			}
+
+			ts.forEachChild(child, visit);
+		};
+
+		visit(node);
+		return found;
+	}
+
+	private containsSuperKeyword(node: ts.Node): boolean {
+		let found = false;
+
+		const visit = (child: ts.Node): void => {
+			if (found) {
+				return;
+			}
+
+			if (child.kind === ts.SyntaxKind.SuperKeyword) {
+				found = true;
+				return;
+			}
+
+			ts.forEachChild(child, visit);
+		};
+
+		visit(node);
+		return found;
+	}
+
+	private containsDynamicThisAccess(node: ts.Node): boolean {
+		let found = false;
+
+		const visit = (child: ts.Node): void => {
+			if (found) {
+				return;
+			}
+
+			if (ts.isElementAccessExpression(child) && child.expression.kind === ts.SyntaxKind.ThisKeyword) {
+				found = true;
+				return;
+			}
+
+			ts.forEachChild(child, visit);
+		};
+
+		visit(node);
+		return found;
+	}
+}

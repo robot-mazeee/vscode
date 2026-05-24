@@ -417,6 +417,9 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 				const sourceSymbol = sourceElement ? this._getDocumentSymbol(sourceElement) : undefined;
 				const targetSymbol = targetElement ? this._getDocumentSymbol(targetElement) : undefined;
 
+				const sourceParentSymbol = this._getParentDocumentSymbol(sourceElement);
+				const targetParentSymbol = this._getParentDocumentSymbol(targetElement);
+
 				const position = this._getDropPosition(targetSector);
 
 				if (!outline.uri || !sourceSymbol || !targetSymbol || !position || sourceElement === targetElement) {
@@ -428,11 +431,12 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 					return;
 				}
 
-
 				void this._commandService.executeCommand('outline.moveSymbol', {
 					uri: outline.uri,
 					source: this._toOutlineMoveSymbol(sourceSymbol),
 					target: this._toOutlineMoveSymbol(targetSymbol),
+					sourceParent: sourceParentSymbol ? this._toOutlineMoveSymbol(sourceParentSymbol) : undefined,
+					targetParent: targetParentSymbol ? this._toOutlineMoveSymbol(targetParentSymbol) : undefined,
 					position
 				});
 			},

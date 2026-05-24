@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
-import { TextMoveEngine } from '../refactor/textMoveEngine';
+import { JavaScriptMethodExtractEngine } from '../refactor/javascriptMethodExtractEngine';
 import { DropPosition, MoveSymbolRequest } from '../refactor/types';
 
 interface SerializedRange {
@@ -28,6 +28,8 @@ interface MoveSymbolCommandArgs {
 	uri: vscode.Uri;
 	source: SerializedOutlineMoveSymbol;
 	target: SerializedOutlineMoveSymbol;
+	sourceParent?: SerializedOutlineMoveSymbol;
+	targetParent?: SerializedOutlineMoveSymbol;
 	position: DropPosition;
 }
 
@@ -36,6 +38,18 @@ function reviveRange(range: SerializedRange): vscode.Range {
 		new vscode.Position(range.start.line, range.start.character),
 		new vscode.Position(range.end.line, range.end.character)
 	);
+}
+
+function reviveSymbol(symbol: SerializedOutlineMoveSymbol | undefined) {
+	if (!symbol) {
+		return undefined;
+	}
+
+	return {
+		name: symbol.name,
+		kind: symbol.kind,
+		range: reviveRange(symbol.range)
+	};
 }
 
 export function registerMoveSymbolCommand(
@@ -48,20 +62,14 @@ export function registerMoveSymbolCommand(
 
 			const request: MoveSymbolRequest = {
 				document,
-				source: {
-					name: args.source.name,
-					kind: args.source.kind,
-					range: reviveRange(args.source.range)
-				},
-				target: {
-					name: args.target.name,
-					kind: args.target.kind,
-					range: reviveRange(args.target.range)
-				},
+				source: reviveSymbol(args.source)!,
+				target: reviveSymbol(args.target)!,
+				sourceParent: reviveSymbol(args.sourceParent),
+				targetParent: reviveSymbol(args.targetParent),
 				dropPosition: args.position
 			};
 
-			const engine = new TextMoveEngine();
+			const engine = new JavaScriptMethodExtractEngine();
 			const validation = engine.canMove(request);
 
 			if (!validation.allowed) {

@@ -22,6 +22,8 @@ export interface MoveSymbolRequest {
 	document: vscode.TextDocument;
 	source: OutlineMoveSymbol;
 	target: OutlineMoveSymbol;
+	sourceParent?: OutlineMoveSymbol;
+	targetParent?: OutlineMoveSymbol;
 	dropPosition: DropPosition;
 }
 
