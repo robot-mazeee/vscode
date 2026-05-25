@@ -8,8 +8,33 @@ import * as ts from 'typescript';
 import { MoveSymbolRequest, MoveValidationResult } from './types';
 import { TextMoveEngine } from './textMoveEngine';
 
+interface JavaScriptMethodCallSite {
+	callExpression: ts.CallExpression;
+	propertyAccess: ts.PropertyAccessExpression;
+	range: vscode.Range;
+}
+
+interface JavaScriptThisUsage {
+	node: ts.ThisExpression;
+	range: vscode.Range;
+}
+
+interface JavaScriptMethodMoveAnalysis {
+	methodName: string;
+	receiverParameterName: string;
+	method: ts.MethodDeclaration;
+	enclosingClass: ts.ClassLikeDeclaration;
+	callSites: JavaScriptMethodCallSite[];
+	thisUsages: JavaScriptThisUsage[];
+	usesThis: boolean;
+	allowed: boolean;
+}
+
 export class JavaScriptMethodExtractEngine extends TextMoveEngine {
-	public override canMove(request: MoveSymbolRequest): MoveValidationResult {
+	public analyzeMove(request: MoveSymbolRequest): JavaScriptMethodMoveAnalysis | MoveValidationResult {
+		// find method
+
+		// validate safety
 		if (request.document.languageId !== 'javascript') {
 			return {
 				allowed: false,
@@ -62,20 +87,20 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 			ts.ScriptKind.JS
 		);
 
-		const analysis = this.findMovedMethod(
+		const movedMethod = this.findMovedMethod(
 			sourceFile,
 			request.document,
 			request.source.range
 		);
 
-		if (!analysis) {
+		if (!movedMethod) {
 			return {
 				allowed: false,
 				reason: 'Could not resolve the selected method in the syntax tree.'
 			};
 		}
 
-		const { method, enclosingClass } = analysis;
+		const { method, enclosingClass } = movedMethod;
 
 		if (ts.isConstructorDeclaration(method)) {
 			return {
@@ -145,7 +170,112 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 			return callSiteValidation;
 		}
 
+		const callSites = this.collectCallSites(
+			enclosingClass,
+			method,
+			methodName,
+			request.document
+		);
+
+		const thisUsages = this.collectThisUsages(
+			method,
+			request.document
+		);
+
+		const analysis: JavaScriptMethodMoveAnalysis = {
+			methodName,
+			receiverParameterName: 'obj',
+			method,
+			enclosingClass,
+			callSites,
+			thisUsages,
+			usesThis: thisUsages.length > 0,
+			allowed: true
+		};
+
+		return analysis;
+	}
+
+	public override canMove(request: MoveSymbolRequest): MoveValidationResult {
+		const analysis = this.analyzeMove(request);
+
+		if (analysis.allowed) {
+			return analysis;
+		}
+
 		return { allowed: true };
+	}
+
+	private collectCallSites(
+		enclosingClass: ts.ClassLikeDeclaration,
+		movedMethod: ts.MethodDeclaration,
+		methodName: string,
+		document: vscode.TextDocument
+	): JavaScriptMethodCallSite[] {
+		const callSites: JavaScriptMethodCallSite[] = [];
+
+		const visit = (node: ts.Node): void => {
+			// Do not record calls inside the moved method itself.
+			if (node === movedMethod) {
+				return;
+			}
+
+			if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+				const propertyAccess = node.expression;
+
+				if (
+					propertyAccess.expression.kind === ts.SyntaxKind.ThisKeyword &&
+					propertyAccess.name.text === methodName
+				) {
+					callSites.push({
+						callExpression: node,
+						propertyAccess,
+						range: this.nodeToRange(document, node)
+					});
+				}
+			}
+
+			ts.forEachChild(node, visit);
+		};
+
+		visit(enclosingClass);
+
+		return callSites;
+	}
+
+	private collectThisUsages(
+		method: ts.MethodDeclaration,
+		document: vscode.TextDocument
+	): JavaScriptThisUsage[] {
+		const usages: JavaScriptThisUsage[] = [];
+
+		const visit = (node: ts.Node): void => {
+			if (node.kind === ts.SyntaxKind.ThisKeyword) {
+				usages.push({
+					node: node as ts.ThisExpression,
+					range: this.nodeToRange(document, node)
+				});
+				return;
+			}
+
+			ts.forEachChild(node, visit);
+		};
+
+		if (method.body) {
+			visit(method.body);
+		}
+
+		return usages;
+	}
+
+	private nodeToRange(
+		document: vscode.TextDocument,
+		node: ts.Node
+	): vscode.Range {
+		return new vscode.Range(
+			document.positionAt(node.getStart()),
+			document.positionAt(node.getEnd())
+		);
 	}
 
 	private sameSymbol(a: { name: string; kind: number; range: vscode.Range }, b: { name: string; kind: number; range: vscode.Range }): boolean {
