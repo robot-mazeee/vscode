@@ -13,6 +13,11 @@ export interface OutlineMoveSymbol {
 	range: vscode.Range;
 }
 
+export interface MoveValidationResult {
+	allowed: boolean;
+	reason?: string;
+}
+
 export interface MoveSymbolRequest {
 	document: vscode.TextDocument;
 	source: OutlineMoveSymbol;
@@ -21,6 +26,6 @@ export interface MoveSymbolRequest {
 }
 
 export interface SymbolMoveEngine {
-	canMove(request: MoveSymbolRequest): boolean;
+	canMove(request: MoveSymbolRequest): MoveValidationResult;
 	buildEdit(request: MoveSymbolRequest): vscode.WorkspaceEdit | undefined;
 }

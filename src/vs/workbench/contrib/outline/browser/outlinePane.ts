@@ -42,7 +42,7 @@ import { IDragAndDropData } from '../../../../base/browser/dnd.js';
 import { ListDragOverEffectPosition, ListDragOverEffectType } from '../../../../base/browser/ui/list/list.js';
 import { ElementsDragAndDropData, ListViewTargetSector } from '../../../../base/browser/ui/list/listView.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
-import { SymbolKinds, DocumentSymbol } from '../../../../editor/common/languages.js';
+import { SymbolKinds, SymbolKind, DocumentSymbol } from '../../../../editor/common/languages.js';
 
 class OutlineTreeSorter<E> implements ITreeSorter<E> {
 
@@ -217,6 +217,35 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		return undefined;
 	}
 
+	// extracts the parent symbol of the element being moved (if any)
+	private _getParentDocumentSymbol(element: unknown | undefined): DocumentSymbol | undefined {
+		const parent = (element as { parent?: unknown } | undefined)?.parent;
+		return this._getDocumentSymbol(parent);
+	}
+
+	// determines whether the move operation is supported for the given element and target
+	// in our initial implementation, we only allow moving methods outside of theis classes
+	private _isSupportedOutlineMove(sourceElement: unknown | undefined, targetElement: unknown | undefined): boolean {
+		const sourceSymbol = this._getDocumentSymbol(sourceElement);
+		const targetSymbol = this._getDocumentSymbol(targetElement);
+
+		if (!sourceSymbol || !targetSymbol) {
+			return false;
+		}
+
+		if (sourceSymbol.kind !== SymbolKind.Method) {
+			return false;
+		}
+
+		const sourceParentSymbol = this._getParentDocumentSymbol(sourceElement);
+		const targetParentSymbol = this._getParentDocumentSymbol(targetElement);
+		if (sourceParentSymbol?.kind !== SymbolKind.Class || targetParentSymbol?.kind === SymbolKind.Class) {
+			return false;
+		}
+
+		return true;
+	}
+
 	// determines the label shown in the drag preview
 	private _getOutlineDragLabel(sourceElement: unknown | undefined): string {
 		return this._getDocumentSymbol(sourceElement)?.name ?? localize('outline.drag.label', "Symbol");
@@ -361,6 +390,10 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 					return originalDnd?.onDragOver(data, targetElement, targetIndex, targetSector, originalEvent) ?? false;
 				}
 
+				if (!this._isSupportedOutlineMove(sourceElement, targetElement)) {
+					return false;
+				}
+
 				const reaction: ITreeDragOverReaction = {
 					accept: true,
 					effect: {
@@ -390,6 +423,11 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 					originalDnd?.drop(data, targetElement, targetIndex, targetSector, originalEvent);
 					return;
 				}
+
+				if (!this._isSupportedOutlineMove(sourceElement, targetElement)) {
+					return;
+				}
+
 
 				void this._commandService.executeCommand('outline.moveSymbol', {
 					uri: outline.uri,

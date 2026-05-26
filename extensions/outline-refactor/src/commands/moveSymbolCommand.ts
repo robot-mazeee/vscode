@@ -62,11 +62,12 @@ export function registerMoveSymbolCommand(
 			};
 
 			const engine = new TextMoveEngine();
+			const validation = engine.canMove(request);
 
-			if (!engine.canMove(request)) {
-				vscode.window.showWarningMessage(
-					'This symbol move is not supported.'
-				);
+			if (!validation.allowed) {
+				if (validation.reason) {
+					vscode.window.showWarningMessage(validation.reason);
+				}
 				return;
 			}
 
