@@ -44,6 +44,12 @@ import { ElementsDragAndDropData, ListViewTargetSector } from '../../../../base/
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { SymbolKinds, SymbolKind, DocumentSymbol } from '../../../../editor/common/languages.js';
 
+interface VisibleTreeNode {
+	visible: boolean;
+	collapsed: boolean;
+	children: readonly VisibleTreeNode[];
+}
+
 class OutlineTreeSorter<E> implements ITreeSorter<E> {
 
 	constructor(
@@ -223,6 +229,13 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		return this._getDocumentSymbol(parent);
 	}
 
+	// Identifies whether the move operation is supported for the given element and target, based on their type and their parent type
+	private _isPotentialMethodExtractionSource(symbol: DocumentSymbol): boolean {
+		return symbol.kind === SymbolKind.Method
+			|| symbol.kind === SymbolKind.Constructor
+			|| symbol.kind === SymbolKind.Property;
+	}
+
 	// determines whether the move operation is supported for the given element and target
 	// in our initial implementation, we only allow moving methods outside of theis classes
 	private _isSupportedOutlineMove(sourceElement: unknown | undefined, targetElement: unknown | undefined): boolean {
@@ -233,7 +246,7 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 			return false;
 		}
 
-		if (sourceSymbol.kind !== SymbolKind.Method) {
+		if (!this._isPotentialMethodExtractionSource(sourceSymbol)) {
 			return false;
 		}
 
@@ -353,6 +366,31 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		};
 	}
 
+	private _getLastVisibleDescendantIndex(element: unknown, targetIndex: number): number {
+		const node = this._tree?.getNode(element);
+		if (!node) {
+			return targetIndex;
+		}
+
+		const countVisibleRows = (node: VisibleTreeNode): number => {
+			if (!node.visible) {
+				return 0;
+			}
+
+			if (node.collapsed) {
+				return 1;
+			}
+
+			let count = 1;
+			for (const child of node.children) {
+				count += countVisibleRows(child);
+			}
+			return count;
+		};
+
+		return targetIndex + countVisibleRows(node) - 1;
+	}
+
 	// creates the outline drag-and-drop implementation
 	private _createOutlineDragAndDrop(
 		outline: IOutline<unknown>,
@@ -403,7 +441,11 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 				};
 
 				if (typeof targetIndex === 'number') {
-					reaction.feedback = [targetIndex];
+					reaction.feedback = [
+						position === 'after'
+							? this._getLastVisibleDescendantIndex(targetElement, targetIndex)
+							: targetIndex
+					];
 				}
 
 				return reaction;

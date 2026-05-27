@@ -32,8 +32,6 @@ interface JavaScriptMethodMoveAnalysis {
 
 export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 	public analyzeMove(request: MoveSymbolRequest): JavaScriptMethodMoveAnalysis | MoveValidationResult {
-		// find method
-
 		// validate safety
 		if (request.document.languageId !== 'javascript') {
 			return {
@@ -42,35 +40,10 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 			};
 		}
 
-		if (request.source.kind !== vscode.SymbolKind.Method) {
-			return {
-				allowed: false,
-				reason: 'Only methods can be moved out of classes right now.'
-			};
-		}
-
 		if (request.sourceParent?.kind !== vscode.SymbolKind.Class) {
 			return {
 				allowed: false,
 				reason: 'The selected method must be inside a class.'
-			};
-		}
-
-		const targetIsSourceParent =
-			request.sourceParent !== undefined &&
-			this.sameSymbol(request.target, request.sourceParent);
-
-		if (request.targetParent?.kind === vscode.SymbolKind.Class) {
-			return {
-				allowed: false,
-				reason: 'Moving methods into a class is not supported yet. Drop the method outside of its enclosing class.'
-			};
-		}
-
-		if (request.target.kind === vscode.SymbolKind.Class && !targetIsSourceParent) {
-			return {
-				allowed: false,
-				reason: 'Moving methods into another class is not supported yet.'
 			};
 		}
 
@@ -105,35 +78,56 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 		if (ts.isConstructorDeclaration(method)) {
 			return {
 				allowed: false,
-				reason: 'Constructors cannot be moved out of a class.'
+				reason: 'Constructors cannot be moved out of a class yet.'
+			};
+		}
+
+		if (ts.isGetAccessorDeclaration(method) || ts.isSetAccessorDeclaration(method)) {
+			return {
+				allowed: false,
+				reason: 'Getters and setters cannot be moved out of a class yet.'
+			};
+		}
+
+		if (ts.isPropertyDeclaration(method)) {
+			return {
+				allowed: false,
+				reason: 'Class fields cannot be moved out of a class yet.'
+			};
+		}
+
+		if (request.source.kind !== vscode.SymbolKind.Method) {
+			return {
+				allowed: false,
+				reason: 'Only methods can be moved out of classes for now.'
 			};
 		}
 
 		if (!ts.isMethodDeclaration(method)) {
 			return {
 				allowed: false,
-				reason: 'Only class methods can be moved out right now.'
+				reason: 'Only class methods can be moved out of a class	for now.'
 			};
 		}
 
 		if (!method.body) {
 			return {
 				allowed: false,
-				reason: 'Methods without bodies cannot be moved.'
+				reason: 'Methods without bodies cannot be moved yet.'
+			};
+		}
+
+		if (ts.isPrivateIdentifier(method.name)) {
+			return {
+				allowed: false,
+				reason: 'Private methods cannot be moved out of a class yet.'
 			};
 		}
 
 		if (!ts.isIdentifier(method.name)) {
 			return {
 				allowed: false,
-				reason: 'Only methods with simple identifier names can be moved.'
-			};
-		}
-
-		if (this.hasModifier(method, ts.SyntaxKind.StaticKeyword)) {
-			return {
-				allowed: false,
-				reason: 'Static methods cannot be moved out of a class yet.'
+				reason: 'Only methods with simple identifier names can be moved for now.'
 			};
 		}
 
@@ -144,17 +138,24 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 			};
 		}
 
+		if (this.hasModifier(method, ts.SyntaxKind.StaticKeyword)) {
+			return {
+				allowed: false,
+				reason: 'Static methods cannot be moved out of a class yet.'
+			};
+		}
+
 		if (this.containsSuperKeyword(method)) {
 			return {
 				allowed: false,
-				reason: 'Methods that use super cannot be moved out of a class.'
+				reason: 'Methods that use super cannot be moved out of a class yet.'
 			};
 		}
 
 		if (this.containsDynamicThisAccess(method)) {
 			return {
 				allowed: false,
-				reason: 'Methods with dynamic this[...] access cannot be moved safely.'
+				reason: 'Methods with dynamic this[...] access cannot be moved safely for now.'
 			};
 		}
 
@@ -199,7 +200,7 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 	public override canMove(request: MoveSymbolRequest): MoveValidationResult {
 		const analysis = this.analyzeMove(request);
 
-		if (analysis.allowed) {
+		if (!analysis.allowed) {
 			return analysis;
 		}
 
@@ -276,15 +277,6 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 			document.positionAt(node.getStart()),
 			document.positionAt(node.getEnd())
 		);
-	}
-
-	private sameSymbol(a: { name: string; kind: number; range: vscode.Range }, b: { name: string; kind: number; range: vscode.Range }): boolean {
-		return a.name === b.name &&
-			a.kind === b.kind &&
-			a.range.start.line === b.range.start.line &&
-			a.range.start.character === b.range.start.character &&
-			a.range.end.line === b.range.end.line &&
-			a.range.end.character === b.range.end.character;
 	}
 
 	private findMovedMethod(

@@ -65,10 +65,12 @@ export class TextMoveEngine implements SymbolMoveEngine {
 					: targetEnd;
 		}
 
-		const newText =
-			textWithoutSource.slice(0, insertionOffset) +
-			movedText +
-			textWithoutSource.slice(insertionOffset);
+		const newText = this.insertWithBlankLines(
+			textWithoutSource,
+			insertionOffset,
+			movedText,
+			this.getEOL(document)
+		);
 
 		const edit = new vscode.WorkspaceEdit();
 
@@ -80,6 +82,29 @@ export class TextMoveEngine implements SymbolMoveEngine {
 		edit.replace(document.uri, fullDocumentRange, newText);
 
 		return edit;
+	}
+
+	private getEOL(document: vscode.TextDocument): string {
+		return document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
+	}
+
+	private insertWithBlankLines(
+		text: string,
+		offset: number,
+		insertedText: string,
+		eol: string
+	): string {
+		const before = text.slice(0, offset).replace(/[ \t]*(\r\n|\r|\n)*[ \t]*$/, '');
+		const after = text.slice(offset).replace(/^[ \t]*(\r\n|\r|\n)*[ \t]*/, '');
+
+		const normalizedInsertedText = insertedText
+			.replace(/^(\r\n|\r|\n)+/, '')
+			.replace(/(\r\n|\r|\n)+$/, '');
+
+		const prefix = before.length > 0 ? eol + eol : '';
+		const suffix = after.length > 0 ? eol + eol : eol;
+
+		return before + prefix + normalizedInsertedText + suffix + after;
 	}
 
 	protected expandToWholeLines(
