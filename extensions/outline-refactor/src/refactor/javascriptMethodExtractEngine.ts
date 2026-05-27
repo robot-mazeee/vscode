@@ -27,7 +27,12 @@ interface JavaScriptMethodMoveAnalysis {
 	callSites: JavaScriptMethodCallSite[];
 	thisUsages: JavaScriptThisUsage[];
 	usesThis: boolean;
-	allowed: boolean;
+}
+
+function isMoveValidationResult(
+	value: JavaScriptMethodMoveAnalysis | MoveValidationResult
+): value is MoveValidationResult {
+	return 'allowed' in value;
 }
 
 export class JavaScriptMethodExtractEngine extends TextMoveEngine {
@@ -190,8 +195,7 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 			enclosingClass,
 			callSites,
 			thisUsages,
-			usesThis: thisUsages.length > 0,
-			allowed: true
+			usesThis: thisUsages.length > 0
 		};
 
 		return analysis;
@@ -200,11 +204,236 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 	public override canMove(request: MoveSymbolRequest): MoveValidationResult {
 		const analysis = this.analyzeMove(request);
 
-		if (!analysis.allowed) {
+		if (isMoveValidationResult(analysis)) {
 			return analysis;
 		}
 
 		return { allowed: true };
+	}
+
+	public override buildEdit(request: MoveSymbolRequest): vscode.WorkspaceEdit | undefined {
+		const analysis = this.analyzeMove(request);
+
+		if (isMoveValidationResult(analysis)) {
+			return undefined;
+		}
+
+		const document = request.document;
+		const originalText = document.getText();
+		const eol = this.getDocumentEOL(document);
+		const sourceFile = analysis.method.getSourceFile();
+
+		const standaloneFunctionText = this.buildStandaloneFunctionText(request, analysis);
+		if (!standaloneFunctionText) {
+			return undefined;
+		}
+
+		const sourceRange = this.expandToWholeLines(document, request.source.range);
+		const targetRange = this.expandToWholeLines(document, request.target.range);
+
+		const sourceStart = document.offsetAt(sourceRange.start);
+		const sourceEnd = document.offsetAt(sourceRange.end);
+
+		const insertionOffset = request.dropPosition === 'before'
+			? document.offsetAt(targetRange.start)
+			: document.offsetAt(targetRange.end);
+
+		const replacements: Array<{ start: number; end: number; text: string }> = [];
+
+		// Remove the original class method.
+		replacements.push({
+			start: sourceStart,
+			end: sourceEnd,
+			text: ''
+		});
+
+		// Insert the standalone function at the drop location.
+		replacements.push({
+			start: insertionOffset,
+			end: insertionOffset,
+			text: this.formatInsertedFunction(originalText, insertionOffset, standaloneFunctionText, eol)
+		});
+
+		// Rewrite this.helper(x) -> helper(this, x)
+		for (const callSite of analysis.callSites) {
+			const argsText = callSite.callExpression.arguments
+				.map(argument => argument.getText(sourceFile))
+				.join(', ');
+
+			const rewrittenArgs = argsText.length > 0
+				? `this, ${argsText}`
+				: 'this';
+
+			replacements.push({
+				start: callSite.callExpression.getStart(sourceFile),
+				end: callSite.callExpression.getEnd(),
+				text: `${analysis.methodName}(${rewrittenArgs})`
+			});
+		}
+
+		const newText = this.applyReplacements(originalText, replacements);
+
+		const edit = new vscode.WorkspaceEdit();
+		const fullDocumentRange = new vscode.Range(
+			document.positionAt(0),
+			document.positionAt(originalText.length)
+		);
+
+		edit.replace(document.uri, fullDocumentRange, newText);
+
+		return edit;
+	}
+
+	private buildStandaloneFunctionText(
+		request: MoveSymbolRequest,
+		analysis: JavaScriptMethodMoveAnalysis
+	): string | undefined {
+		const document = request.document;
+		const method = analysis.method;
+		const body = method.body;
+
+		if (!body) {
+			return undefined;
+		}
+
+		const sourceFile = method.getSourceFile();
+		const eol = this.getDocumentEOL(document);
+
+		const methodParameters = method.parameters.map(parameter =>
+			parameter.getText(sourceFile)
+		);
+
+		const functionParameters = analysis.usesThis ? [
+			analysis.receiverParameterName,
+			...methodParameters
+		] : [
+			...methodParameters
+		];
+
+		let bodyText = body.getText(sourceFile);
+
+		bodyText = this.replaceThisUsagesInBody(
+			bodyText,
+			body,
+			analysis,
+			sourceFile
+		);
+
+		bodyText = this.outdentBodyText(
+			bodyText,
+			this.getLineIndent(document, method.getStart(sourceFile)),
+			eol
+		);
+
+		return `function ${analysis.methodName}(${functionParameters.join(', ')}) ${bodyText}`;
+	}
+
+	private replaceThisUsagesInBody(
+		bodyText: string,
+		body: ts.Block,
+		analysis: JavaScriptMethodMoveAnalysis,
+		sourceFile: ts.SourceFile
+	): string {
+		const bodyStart = body.getStart(sourceFile);
+		const bodyEnd = body.getEnd();
+
+		const replacements = analysis.thisUsages
+			.map(usage => ({
+				start: usage.node.getStart(sourceFile),
+				end: usage.node.getEnd()
+			}))
+			.filter(usage => bodyStart <= usage.start && usage.end <= bodyEnd)
+			.sort((a, b) => b.start - a.start);
+
+		let rewrittenBody = bodyText;
+
+		for (const replacement of replacements) {
+			const relativeStart = replacement.start - bodyStart;
+			const relativeEnd = replacement.end - bodyStart;
+
+			rewrittenBody =
+				rewrittenBody.slice(0, relativeStart) +
+				analysis.receiverParameterName +
+				rewrittenBody.slice(relativeEnd);
+		}
+
+		return rewrittenBody;
+	}
+
+	private applyReplacements(
+		text: string,
+		replacements: Array<{ start: number; end: number; text: string }>
+	): string {
+		const sortedReplacements = [...replacements].sort((a, b) => {
+			if (a.start !== b.start) {
+				return b.start - a.start;
+			}
+
+			return b.end - a.end;
+		});
+
+		let result = text;
+
+		for (const replacement of sortedReplacements) {
+			result =
+				result.slice(0, replacement.start) +
+				replacement.text +
+				result.slice(replacement.end);
+		}
+
+		return result;
+	}
+
+	private formatInsertedFunction(
+		originalText: string,
+		offset: number,
+		functionText: string,
+		eol: string
+	): string {
+		const before = originalText.slice(0, offset);
+		const after = originalText.slice(offset);
+
+		const prefix = before.endsWith(eol + eol) || before.length === 0
+			? ''
+			: eol + eol;
+
+		const suffix = after.startsWith(eol + eol) || after.length === 0
+			? ''
+			: eol + eol;
+
+		return prefix + functionText.trim() + suffix;
+	}
+
+	private getDocumentEOL(document: vscode.TextDocument): string {
+		return document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
+	}
+
+	private getLineIndent(document: vscode.TextDocument, offset: number): string {
+		const position = document.positionAt(offset);
+		const lineText = document.lineAt(position.line).text;
+
+		return lineText.match(/^\s*/)?.[0] ?? '';
+	}
+
+	private outdentBodyText(bodyText: string, indentToRemove: string, eol: string): string {
+		if (!indentToRemove) {
+			return bodyText;
+		}
+
+		const lines = bodyText.split(/\r\n|\r|\n/);
+
+		const outdentedLines = lines.map((line, index) => {
+			// The first line is usually just "{", so leave it alone.
+			if (index === 0) {
+				return line;
+			}
+
+			return line.startsWith(indentToRemove)
+				? line.slice(indentToRemove.length)
+				: line;
+		});
+
+		return outdentedLines.join(eol);
 	}
 
 	private collectCallSites(
