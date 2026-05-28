@@ -18,7 +18,6 @@ export class TextMoveEngine implements SymbolMoveEngine {
 			request.target.range
 		);
 
-		// Prevent moving a symbol into itself
 		if (sourceRange.contains(targetRange.start) || sourceRange.contains(targetRange.end)) {
 			return {
 				allowed: false,

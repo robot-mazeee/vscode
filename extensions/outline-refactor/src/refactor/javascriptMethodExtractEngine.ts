@@ -29,7 +29,7 @@ interface JavaScriptMethodMoveAnalysis {
 	usesThis: boolean;
 }
 
-function isMoveValidationResult(
+function isMoveValidationFailure(
 	value: JavaScriptMethodMoveAnalysis | MoveValidationResult
 ): value is MoveValidationResult {
 	return 'allowed' in value;
@@ -37,7 +37,6 @@ function isMoveValidationResult(
 
 export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 	public analyzeMove(request: MoveSymbolRequest): JavaScriptMethodMoveAnalysis | MoveValidationResult {
-		// validate safety
 		if (request.document.languageId !== 'javascript') {
 			return {
 				allowed: false,
@@ -101,24 +100,10 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 			};
 		}
 
-		if (request.source.kind !== vscode.SymbolKind.Method) {
-			return {
-				allowed: false,
-				reason: 'Only methods can be moved out of classes for now.'
-			};
-		}
-
 		if (!ts.isMethodDeclaration(method)) {
 			return {
 				allowed: false,
 				reason: 'Only class methods can be moved out of a class	for now.'
-			};
-		}
-
-		if (!method.body) {
-			return {
-				allowed: false,
-				reason: 'Methods without bodies cannot be moved yet.'
 			};
 		}
 
@@ -202,10 +187,10 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 	}
 
 	public override canMove(request: MoveSymbolRequest): MoveValidationResult {
-		const analysis = this.analyzeMove(request);
+		const result = this.analyzeMove(request);
 
-		if (isMoveValidationResult(analysis)) {
-			return analysis;
+		if (isMoveValidationFailure(result)) {
+			return result;
 		}
 
 		return { allowed: true };
@@ -214,7 +199,7 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 	public override buildEdit(request: MoveSymbolRequest): vscode.WorkspaceEdit | undefined {
 		const analysis = this.analyzeMove(request);
 
-		if (isMoveValidationResult(analysis)) {
+		if (isMoveValidationFailure(analysis)) {
 			return undefined;
 		}
 
@@ -240,29 +225,30 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 
 		const replacements: Array<{ start: number; end: number; text: string }> = [];
 
-		// Remove the original class method.
 		replacements.push({
 			start: sourceStart,
 			end: sourceEnd,
 			text: ''
 		});
 
-		// Insert the standalone function at the drop location.
 		replacements.push({
 			start: insertionOffset,
 			end: insertionOffset,
 			text: this.formatInsertedFunction(originalText, insertionOffset, standaloneFunctionText, eol)
 		});
 
-		// Rewrite this.helper(x) -> helper(this, x)
+		// Rewrite direct calls so they invoke the extracted function instead of the class method.
 		for (const callSite of analysis.callSites) {
 			const argsText = callSite.callExpression.arguments
 				.map(argument => argument.getText(sourceFile))
 				.join(', ');
 
-			const rewrittenArgs = argsText.length > 0
-				? `this, ${argsText}`
-				: 'this';
+			let rewrittenArgs: string;
+			if (analysis.usesThis) {
+				rewrittenArgs = argsText.length > 0 ? `this, ${argsText}` : 'this';
+			} else {
+				rewrittenArgs = argsText;
+			}
 
 			replacements.push({
 				start: callSite.callExpression.getStart(sourceFile),
@@ -423,7 +409,7 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 		const lines = bodyText.split(/\r\n|\r|\n/);
 
 		const outdentedLines = lines.map((line, index) => {
-			// The first line is usually just "{", so leave it alone.
+			// Preserve the opening brace line while outdenting the function body.
 			if (index === 0) {
 				return line;
 			}
@@ -445,7 +431,7 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 		const callSites: JavaScriptMethodCallSite[] = [];
 
 		const visit = (node: ts.Node): void => {
-			// Do not record calls inside the moved method itself.
+			// Calls inside the moved method are moved with the function and do not need call-site rewriting.
 			if (node === movedMethod) {
 				return;
 			}
@@ -558,7 +544,7 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 				return;
 			}
 
-			// Ignore the moved method body itself.
+			// The moved method body is handled separately when creating the standalone function.
 			if (node === movedMethod) {
 				return;
 			}
