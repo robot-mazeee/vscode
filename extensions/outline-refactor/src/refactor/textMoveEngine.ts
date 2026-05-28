@@ -93,12 +93,17 @@ export class TextMoveEngine implements SymbolMoveEngine {
 		insertedText: string,
 		eol: string
 	): string {
-		const before = text.slice(0, offset).replace(/[ \t]*(\r\n|\r|\n)*[ \t]*$/, '');
-		const after = text.slice(offset).replace(/^[ \t]*(\r\n|\r|\n)*[ \t]*/, '');
+		const before = text
+			.slice(0, offset)
+			.replace(/[ \t]*(\r\n|\r|\n)+[ \t]*$/g, '');
+
+		const after = text
+			.slice(offset)
+			.replace(/^[ \t]*(\r\n|\r|\n)+[ \t]*/g, '');
 
 		const normalizedInsertedText = insertedText
-			.replace(/^(\r\n|\r|\n)+/, '')
-			.replace(/(\r\n|\r|\n)+$/, '');
+			.replace(/^[ \t]*(\r\n|\r|\n)+/g, '')
+			.replace(/(\r\n|\r|\n)+[ \t]*$/g, '');
 
 		const prefix = before.length > 0 ? eol + eol : '';
 		const suffix = after.length > 0 ? eol + eol : eol;

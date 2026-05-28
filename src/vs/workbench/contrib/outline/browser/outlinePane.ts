@@ -45,9 +45,16 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { SymbolKinds, SymbolKind, DocumentSymbol } from '../../../../editor/common/languages.js';
 
 interface VisibleTreeNode {
+	element: unknown;
 	visible: boolean;
 	collapsed: boolean;
 	children: readonly VisibleTreeNode[];
+}
+
+interface OutlineDropTarget {
+	element: unknown;
+	position: 'before' | 'after';
+	feedbackElement: unknown;
 }
 
 class OutlineTreeSorter<E> implements ITreeSorter<E> {
@@ -330,6 +337,103 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		return undefined;
 	}
 
+	private _isExpandedClass(element: unknown | undefined): boolean {
+		const symbol = this._getDocumentSymbol(element);
+		const node = element ? this._tree?.getNode(element) : undefined;
+
+		return symbol?.kind === SymbolKind.Class
+			&& !!node
+			&& node.collapsible
+			&& !node.collapsed;
+	}
+
+	private _isLastVisibleDescendantOfClass(element: unknown | undefined): boolean {
+		if (!element) {
+			return false;
+		}
+
+		let child = element;
+		let parent = (element as { parent?: unknown } | undefined)?.parent;
+
+		while (parent) {
+			const parentSymbol = this._getDocumentSymbol(parent);
+
+			if (parentSymbol?.kind !== SymbolKind.Class) {
+				child = parent;
+				parent = (parent as { parent?: unknown } | undefined)?.parent;
+				continue;
+			}
+
+			const parentNode = this._tree?.getNode(parent);
+			if (!parentNode || parentNode.collapsed || parentNode.children.length === 0) {
+				return false;
+			}
+
+			let lastVisibleChild: VisibleTreeNode | undefined;
+			for (const childNode of parentNode.children) {
+				if (childNode.visible) {
+					lastVisibleChild = childNode;
+				}
+			}
+
+			return !!lastVisibleChild && (lastVisibleChild as { element?: unknown }).element === child;
+		}
+
+		return false;
+	}
+
+	private _getContainingClassElement(element: unknown | undefined): unknown | undefined {
+		let parent = (element as { parent?: unknown } | undefined)?.parent;
+
+		while (parent) {
+			if (this._getDocumentSymbol(parent)?.kind === SymbolKind.Class) {
+				return parent;
+			}
+
+			parent = (parent as { parent?: unknown } | undefined)?.parent;
+		}
+
+		return undefined;
+	}
+
+	private _getOutlineDropTarget(
+		targetElement: unknown | undefined,
+		targetSector: ListViewTargetSector | undefined
+	): OutlineDropTarget | undefined {
+		const position = this._getDropPosition(targetSector);
+
+		if (!targetElement || !position) {
+			return undefined;
+		}
+
+		if (position === 'after') {
+			if (this._isExpandedClass(targetElement)) {
+				return {
+					element: targetElement,
+					position: 'before',
+					feedbackElement: targetElement
+				};
+			}
+
+			if (this._isLastVisibleDescendantOfClass(targetElement)) {
+				const containingClass = this._getContainingClassElement(targetElement);
+				if (containingClass) {
+					return {
+						element: containingClass,
+						position: 'after',
+						feedbackElement: targetElement
+					};
+				}
+			}
+		}
+
+		return {
+			element: targetElement,
+			position,
+			feedbackElement: targetElement
+		};
+	}
+
 	private _getDraggedElement(data: IDragAndDropData): unknown | undefined {
 		if (!(data instanceof ElementsDragAndDropData)) {
 			return undefined;
@@ -412,11 +516,11 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 
 			onDragOver: (data, targetElement, targetIndex, targetSector, originalEvent): boolean | ITreeDragOverReaction => {
 				const sourceElement = this._getDraggedElement(data);
-				const position = this._getDropPosition(targetSector);
+				const dropTarget = this._getOutlineDropTarget(targetElement, targetSector);
 				const sourceSymbol = this._getDocumentSymbol(sourceElement);
-				const targetSymbol = this._getDocumentSymbol(targetElement);
+				const targetSymbol = this._getDocumentSymbol(dropTarget?.element);
 
-				if (!outline.uri || !sourceSymbol || !targetSymbol || !position || sourceElement === targetElement) {
+				if (!outline.uri || !sourceSymbol || !targetSymbol || !dropTarget || sourceElement === dropTarget.element) {
 					return originalDnd?.onDragOver(data, targetElement, targetIndex, targetSector, originalEvent) ?? false;
 				}
 
@@ -425,7 +529,7 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 					return originalDnd?.onDragOver(data, targetElement, targetIndex, targetSector, originalEvent) ?? false;
 				}
 
-				if (!this._isSupportedOutlineMove(sourceElement, targetElement)) {
+				if (!this._isSupportedOutlineMove(sourceElement, dropTarget.element)) {
 					return false;
 				}
 
@@ -433,14 +537,14 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 					accept: true,
 					effect: {
 						type: ListDragOverEffectType.Move,
-						position: position === 'before' ? ListDragOverEffectPosition.Before : ListDragOverEffectPosition.After
+						position: dropTarget.position === 'before' ? ListDragOverEffectPosition.Before : ListDragOverEffectPosition.After
 					}
 				};
 
 				if (typeof targetIndex === 'number') {
 					reaction.feedback = [
-						position === 'after'
-							? this._getLastVisibleDescendantIndex(targetElement, targetIndex)
+						dropTarget.position === 'after'
+							? this._getLastVisibleDescendantIndex(dropTarget.feedbackElement, targetIndex)
 							: targetIndex
 					];
 				}
@@ -454,19 +558,18 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 				const sourceElement = this._getDraggedElement(data);
 
 				const sourceSymbol = sourceElement ? this._getDocumentSymbol(sourceElement) : undefined;
-				const targetSymbol = targetElement ? this._getDocumentSymbol(targetElement) : undefined;
+				const dropTarget = this._getOutlineDropTarget(targetElement, targetSector);
+				const targetSymbol = dropTarget ? this._getDocumentSymbol(dropTarget.element) : undefined;
 
 				const sourceParentSymbol = this._getParentDocumentSymbol(sourceElement);
-				const targetParentSymbol = this._getParentDocumentSymbol(targetElement);
+				const targetParentSymbol = this._getParentDocumentSymbol(dropTarget?.element);
 
-				const position = this._getDropPosition(targetSector);
-
-				if (!outline.uri || !sourceSymbol || !targetSymbol || !position || sourceElement === targetElement) {
+				if (!outline.uri || !sourceSymbol || !targetSymbol || !dropTarget || sourceElement === dropTarget.element) {
 					originalDnd?.drop(data, targetElement, targetIndex, targetSector, originalEvent);
 					return;
 				}
 
-				if (!this._isSupportedOutlineMove(sourceElement, targetElement)) {
+				if (!this._isSupportedOutlineMove(sourceElement, dropTarget.element)) {
 					return;
 				}
 
@@ -476,7 +579,7 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 					target: this._toOutlineMoveSymbol(targetSymbol),
 					sourceParent: sourceParentSymbol ? this._toOutlineMoveSymbol(sourceParentSymbol) : undefined,
 					targetParent: targetParentSymbol ? this._toOutlineMoveSymbol(targetParentSymbol) : undefined,
-					position
+					position: dropTarget.position
 				});
 			},
 
