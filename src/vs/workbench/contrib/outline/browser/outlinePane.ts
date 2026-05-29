@@ -95,7 +95,7 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 	private _treeDimensions?: dom.Dimension;
 	private _treeStates = new LRUCache<string, IAbstractTreeViewState>(10);
 
-	// Stores the temporary visual element shown during drag.
+	// The custom drag preview is attached to the tree container and removed after each drag.
 	private _dragImage?: HTMLElement;
 
 	private _ctxFollowsCursor!: IContextKey<boolean>;
@@ -207,7 +207,6 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		this._dragImage = undefined;
 	}
 
-	// Extracts the document symbol represented by an outline tree element.
 	private _getDocumentSymbol(element: unknown | undefined): DocumentSymbol | undefined {
 		const symbol = (element as { symbol?: unknown })?.symbol;
 
@@ -229,20 +228,18 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		return undefined;
 	}
 
-	// Extracts the parent document symbol of an outline tree element, if any.
 	private _getParentDocumentSymbol(element: unknown | undefined): DocumentSymbol | undefined {
 		const parent = (element as { parent?: unknown } | undefined)?.parent;
 		return this._getDocumentSymbol(parent);
 	}
 
-	// Identifies symbols that may initiate method extraction.
 	private _isPotentialMethodExtractionSource(symbol: DocumentSymbol): boolean {
 		return symbol.kind === SymbolKind.Method
 			|| symbol.kind === SymbolKind.Constructor
 			|| symbol.kind === SymbolKind.Property;
 	}
 
-	// Determines whether the outline move can be handled by the refactoring command.
+	// Keep drag feedback limited to moves the refactoring command can validate further.
 	private _isSupportedOutlineMove(sourceElement: unknown | undefined, targetElement: unknown | undefined): boolean {
 		const sourceSymbol = this._getDocumentSymbol(sourceElement);
 		const targetSymbol = this._getDocumentSymbol(targetElement);
@@ -264,12 +261,10 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		return true;
 	}
 
-	// Determines the label shown in the drag preview.
 	private _getOutlineDragLabel(sourceElement: unknown | undefined): string {
 		return this._getDocumentSymbol(sourceElement)?.name ?? localize('outline.drag.label', "Symbol");
 	}
 
-	// Reproduces the dragged symbol icon in the drag preview.
 	private _createOutlineDragIcon(sourceElement: unknown | undefined): HTMLElement | undefined {
 		const symbol = this._getDocumentSymbol(sourceElement);
 		if (!symbol) {
@@ -290,7 +285,6 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 
 		const target = event.target as HTMLElement | null;
 
-		// Finds the outline row being dragged so the preview can match its size.
 		const row = target?.closest('.monaco-list-row') as HTMLElement | null;
 
 		if (!row) {
@@ -325,11 +319,9 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 
 	private _getDropPosition(targetSector: ListViewTargetSector | undefined): 'before' | 'after' | undefined {
 		switch (targetSector) {
-			// From the middle of the row upwards -> before.
 			case ListViewTargetSector.TOP:
 			case ListViewTargetSector.CENTER_TOP:
 				return 'before';
-			// From the middle of the row downwards -> after.
 			case ListViewTargetSector.CENTER_BOTTOM:
 			case ListViewTargetSector.BOTTOM:
 				return 'after';
@@ -492,7 +484,6 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 		return targetIndex + countVisibleRows(node) - 1;
 	}
 
-	// Creates an outline drag-and-drop wrapper that preserves existing behavior.
 	private _createOutlineDragAndDrop(
 		outline: IOutline<unknown>,
 		originalDnd: ITreeDragAndDrop<unknown> | undefined
@@ -524,7 +515,7 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 					return originalDnd?.onDragOver(data, targetElement, targetIndex, targetSector, originalEvent) ?? false;
 				}
 
-				// Drag is only allowed when the view is sorted by code position, not by name or kind.
+				// Visual order must match source order for before/after drops to produce predictable edits.
 				if (this._outlineViewState.sortBy === OutlineSortOrder.ByKind || this._outlineViewState.sortBy === OutlineSortOrder.ByName) {
 					return originalDnd?.onDragOver(data, targetElement, targetIndex, targetSector, originalEvent) ?? false;
 				}
@@ -662,7 +653,7 @@ export class OutlinePane extends ViewPane implements IOutlinePane {
 
 		const sorter = new OutlineTreeSorter(newOutline.config.comparator, this._outlineViewState.sortBy);
 
-		// Wrap the existing drag-and-drop implementation so unsupported cases keep their original behavior.
+		// Unsupported drag-and-drop cases continue to use the outline's existing behavior.
 		const dnd = this._createOutlineDragAndDrop(newOutline, newOutline.config.options.dnd);
 
 		const tree = this._instantiationService.createInstance(

@@ -1,4 +1,4 @@
-/*---------------------------------------------------------------------------------------------
+﻿/*---------------------------------------------------------------------------------------------
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
@@ -544,7 +544,7 @@ export class JavaScriptMethodExtractEngine extends TextMoveEngine {
 				return;
 			}
 
-			// The moved method body is handled separately when creating the standalone function.
+			// Validate references to the moved method outside the method body; the body itself is rewritten separately.
 			if (node === movedMethod) {
 				return;
 			}
